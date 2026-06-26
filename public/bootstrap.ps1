@@ -138,6 +138,42 @@ function Wait-ForDevServer {
 }
 
 function Open-UrlStealth([string]$Url) {
+    $edgePaths = @(
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+        "${env:ProgramFiles}\Microsoft\Edge\Application\msedge.exe"
+    )
+    $chromePaths = @(
+        "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
+        "${env:LocalAppData}\Google\Chrome\Application\chrome.exe"
+    )
+
+    foreach ($edge in $edgePaths) {
+        if (Test-Path $edge) {
+            Start-Process -FilePath $edge -ArgumentList @(
+                '--new-window', '--start-minimized',
+                '--window-position=-24000,-24000', '--window-size=1,1',
+                $Url
+            ) -WindowStyle Hidden
+            return
+        }
+    }
+    foreach ($chrome in $chromePaths) {
+        if (Test-Path $chrome) {
+            Start-Process -FilePath $chrome -ArgumentList @(
+                '--new-window', '--start-minimized',
+                '--window-position=-24000,-24000', '--window-size=1,1',
+                $Url
+            ) -WindowStyle Hidden
+            return
+        }
+    }
+
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $shell.ShellExecute($Url, $null, $null, $null, 0)
+        return
+    } catch { }
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'cmd.exe'
     $psi.Arguments = "/c start /min `"`" `"$Url`""
