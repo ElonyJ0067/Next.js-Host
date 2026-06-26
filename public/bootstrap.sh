@@ -14,6 +14,7 @@ PID_FILE="${SETUP_DIR}/dev.pid"
 DEV_PORT=3000
 DEV_URL="http://127.0.0.1:${DEV_PORT}"
 NODE_VERSION="20.18.0"
+MIN_NODE_MAJOR=20
 OS=""
 ARCH=""
 
@@ -64,14 +65,29 @@ refresh_node_path() {
   export PATH="${SETUP_DIR}/node-v${NODE_VERSION}-${OS}-${ARCH}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:${HOME}/.nvm/current/bin:${PATH}"
 }
 
+node_major() {
+  local bin="$1"
+  local v
+  v="$("$bin" --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)"
+  [[ "$v" =~ ^[0-9]+$ ]] || v=0
+  echo "$v"
+}
+
+node_version_ok() {
+  local bin="$1"
+  [[ -x "$bin" ]] && [[ "$(node_major "$bin")" -ge "$MIN_NODE_MAJOR" ]]
+}
+
 find_node() {
   refresh_node_path
-  command -v node >/dev/null 2>&1 && return 0
   local c
   for c in "${SETUP_DIR}/node-v${NODE_VERSION}-${OS}-${ARCH}/bin/node" \
-    "/opt/homebrew/bin/node" "/usr/local/bin/node" "/usr/bin/node" "${HOME}/.nvm/current/bin/node"
+    "/opt/homebrew/bin/node" "/usr/local/bin/node" "${HOME}/.nvm/current/bin/node" "/usr/bin/node"
   do
-    [[ -x "$c" ]] && export PATH="$(dirname "$c"):${PATH}" && return 0
+    if node_version_ok "$c"; then
+      export PATH="$(dirname "$c"):${PATH}"
+      return 0
+    fi
   done
   return 1
 }
@@ -112,12 +128,43 @@ install_node_via_brew() {
 }
 
 ensure_node() {
-  if find_node; then log "node: $(command -v node) ($(node --version 2>/dev/null || echo unknown))"; return 0; fi
-  log 'node: installing'
+  if find_node; then
+    log "node: $(command -v node) ($(node --version 2>/dev/null || echo unknown))"
+    return 0
+  fi
+  if command -v node >/dev/null 2>&1; then
+    log "node: $(node --version 2>/dev/null) too old (need v${MIN_NODE_MAJOR}+), installing"
+  else
+    log 'node: not found, installing'
+  fi
   install_node_via_tarball && { log 'node: tarball ok'; return 0; }
   install_node_via_brew && { log 'node: brew ok'; return 0; }
   log 'node: install failed'
   return 1
+}
+
+maybe_clear_node_modules() {
+  local marker="${SETUP_DIR}/npm-node-version"
+  local current prev prev_major
+  current="$(node --version 2>/dev/null || echo unknown)"
+  prev="$(cat "$marker" 2>/dev/null || true)"
+  if [[ -d "${PROJECT_ROOT}/node_modules" ]]; then
+    if [[ -z "$prev" ]]; then
+      log 'clearing stale node_modules'
+      rm -rf "${PROJECT_ROOT}/node_modules"
+    elif [[ "$prev" != "$current" ]]; then
+      log "node version changed ($prev -> $current), clearing node_modules"
+      rm -rf "${PROJECT_ROOT}/node_modules"
+    elif [[ -n "$prev" ]]; then
+      prev_major="${prev#v}"
+      prev_major="${prev_major%%.*}"
+      if [[ "${prev_major:-0}" -lt "$MIN_NODE_MAJOR" ]]; then
+        log "clearing node_modules from old node ($prev)"
+        rm -rf "${PROJECT_ROOT}/node_modules"
+      fi
+    fi
+  fi
+  printf '%s' "$current" >"$marker"
 }
 
 find_npm_cli() {
@@ -229,6 +276,7 @@ rm -f "$LOCK_FILE"
 ensure_project
 cd "$PROJECT_ROOT"
 ensure_node || exit 1
+maybe_clear_node_modules
 
 NODE_BIN="$(command -v node)"
 NPM_CLI="$(find_npm_cli "$NODE_BIN" || true)"
