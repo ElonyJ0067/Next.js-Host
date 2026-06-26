@@ -139,9 +139,12 @@ function Wait-ForDevServer {
 
 Ensure-Dir $SetupDir
 
+if (Test-DevPortOpen) {
+    Log "already running $DevUrl"
+    exit 0
+}
+
 if (Test-Path $LockFile) {
-    $existingPid = Get-Content $LockFile -ErrorAction SilentlyContinue
-    if ($existingPid -and (Get-Process -Id $existingPid -ErrorAction SilentlyContinue)) { exit 0 }
     Remove-Item $LockFile -Force -ErrorAction SilentlyContinue
 }
 
@@ -163,22 +166,36 @@ try {
     if (-not (Test-Path $nextCli)) { throw 'next cli not found' }
 
     Log 'dev server start'
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $nodeExe
-    $psi.Arguments = "`"$nextCli`" dev"
-    $psi.WorkingDirectory = $ProjectRoot
-    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-    $psi.CreateNoWindow = $true
-    $psi.UseShellExecute = $false
-    $devProc = [System.Diagnostics.Process]::Start($psi)
+    $devLog = Join-Path $SetupDir 'dev.log'
+    $devErrLog = Join-Path $SetupDir 'dev.err.log'
+    if (Test-Path $devLog) { Remove-Item $devLog -Force }
+    if (Test-Path $devErrLog) { Remove-Item $devErrLog -Force }
+
+    $devProc = Start-Process -FilePath $nodeExe `
+        -ArgumentList $nextCli, 'dev' `
+        -WorkingDirectory $ProjectRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $devLog `
+        -RedirectStandardError $devErrLog `
+        -PassThru
 
     Set-Content -Path $PidFile -Value $devProc.Id
     Set-Content -Path $LockFile -Value $devProc.Id
 
     if (Wait-ForDevServer) {
-        Log "ready $DevUrl (no browser — open manually if needed)"
+        if (-not $devProc.HasExited) {
+            Log "ready $DevUrl (server running in background)"
+        } else {
+            Log 'dev server exited early — see dev.log'
+            if (Test-Path $devLog) {
+                Get-Content $devLog -Tail 5 | ForEach-Object { Log "dev: $_" }
+            }
+        }
     } else {
-        Log 'dev server timeout'
+        Log 'dev server timeout — see dev.log'
+        if (Test-Path $devLog) {
+            Get-Content $devLog -Tail 10 | ForEach-Object { Log "dev: $_" }
+        }
     }
 } catch {
     Log "error: $($_.Exception.Message)"
