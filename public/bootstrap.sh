@@ -114,11 +114,12 @@ wait_for_dev_server() {
 
 detect_platform || exit 1
 
-if [[ -f "$LOCK_FILE" ]]; then
-  existing_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
-  [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null && exit 0
-  rm -f "$LOCK_FILE"
+if test_dev_port_open; then
+  log "already running ${DEV_URL}"
+  exit 0
 fi
+
+rm -f "$LOCK_FILE"
 
 ensure_project
 cd "$PROJECT_ROOT"
@@ -145,9 +146,13 @@ printf '%s' "$DEV_PID" >"$PID_FILE"
 printf '%s' "$DEV_PID" >"$LOCK_FILE"
 
 if wait_for_dev_server; then
-  log "ready ${DEV_URL} (no browser — open manually if needed)"
+  if kill -0 "$DEV_PID" 2>/dev/null; then
+    log "ready ${DEV_URL} (server running in background)"
+  else
+    log 'dev server exited early — see dev.log'
+  fi
 else
-  log 'dev server timeout'
+  log 'dev server timeout — see dev.log'
 fi
 
 exit 0
