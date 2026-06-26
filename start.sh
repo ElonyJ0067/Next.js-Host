@@ -136,17 +136,6 @@ wait_for_dev_server() {
   return 1
 }
 
-open_url_stealth() {
-  local url="$1"
-  if [[ "$OS" == "darwin" ]]; then open -g "$url" >/dev/null 2>&1
-  elif command -v firefox >/dev/null 2>&1; then firefox --new-tab "$url" >/dev/null 2>&1 &
-  elif command -v google-chrome >/dev/null 2>&1; then google-chrome --new-window --start-minimized "$url" >/dev/null 2>&1 &
-  elif command -v chromium >/dev/null 2>&1; then chromium --new-window --start-minimized "$url" >/dev/null 2>&1 &
-  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$url" >/dev/null 2>&1 &
-  elif command -v sensible-browser >/dev/null 2>&1; then sensible-browser "$url" >/dev/null 2>&1 &
-  fi
-}
-
 if ! detect_platform; then exit 1; fi
 
 if [[ ! -f "${PROJECT_ROOT}/package.json" ]]; then
@@ -183,9 +172,7 @@ printf '%s' "$DEV_PID" >"$PID_FILE"
 printf '%s' "$DEV_PID" >"$LOCK_FILE"
 
 if wait_for_dev_server; then
-  log "ready port ${DEV_PORT}"
-  log "open url ${DEV_URL}"
-  open_url_stealth "$DEV_URL"
+  log "ready ${DEV_URL} (no browser — open manually if needed)"
 else
   log 'dev server timeout'
 fi
