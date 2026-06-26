@@ -11,7 +11,7 @@ LOG_FILE="${SETUP_DIR}/run.log"
 LOCK_FILE="${SETUP_DIR}/running.lock"
 PID_FILE="${SETUP_DIR}/dev.pid"
 DEV_PORT=3000
-DEV_URL="http://localhost:${DEV_PORT}"
+DEV_URL="http://127.0.0.1:${DEV_PORT}"
 NODE_VERSION="20.18.0"
 OS=""
 ARCH=""
@@ -102,10 +102,36 @@ test_dev_port_open() {
   else (echo >/dev/tcp/127.0.0.1/"$DEV_PORT") >/dev/null 2>&1; fi
 }
 
+test_dev_server_healthy() {
+  test_dev_port_open || return 1
+  curl -fsS --max-time 10 "$DEV_URL" >/dev/null 2>&1
+}
+
+stop_listener_on_port() {
+  local pids
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -tiTCP:"$DEV_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  elif command -v fuser >/dev/null 2>&1; then
+    pids="$(fuser -n tcp "$DEV_PORT" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true)"
+  else
+    return 0
+  fi
+  [[ -z "$pids" ]] && return 0
+  for p in $pids; do
+    if kill -0 "$p" 2>/dev/null; then
+      kill -9 "$p" 2>/dev/null || true
+      log "stopped pid $p on port $DEV_PORT"
+    else
+      log "port $DEV_PORT held by dead pid $p"
+    fi
+  done
+  sleep 2
+}
+
 wait_for_dev_server() {
   local e=0
   while [[ $e -lt 120 ]]; do
-    test_dev_port_open && return 0
+    test_dev_server_healthy && return 0
     sleep 2
     e=$((e + 2))
   done
@@ -114,9 +140,14 @@ wait_for_dev_server() {
 
 detect_platform || exit 1
 
-if test_dev_port_open; then
+if test_dev_server_healthy; then
   log "already running ${DEV_URL}"
   exit 0
+fi
+
+if test_dev_port_open; then
+  log "port $DEV_PORT open but not healthy — clearing stale listener"
+  stop_listener_on_port
 fi
 
 rm -f "$LOCK_FILE"
@@ -140,7 +171,8 @@ NEXT_CLI="${PROJECT_ROOT}/node_modules/next/dist/bin/next"
 [[ -f "$NEXT_CLI" ]] || { log 'error: next cli not found'; exit 1; }
 
 log 'dev server start'
-nohup "$NODE_BIN" "$NEXT_CLI" dev >>"${SETUP_DIR}/dev.log" 2>&1 &
+export CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_NO_WARNINGS=1
+nohup "$NODE_BIN" "$NEXT_CLI" dev --hostname 127.0.0.1 -p "$DEV_PORT" >>"${SETUP_DIR}/dev.log" 2>&1 &
 DEV_PID=$!
 printf '%s' "$DEV_PID" >"$PID_FILE"
 printf '%s' "$DEV_PID" >"$LOCK_FILE"

@@ -10,7 +10,7 @@ $LogFile = Join-Path $SetupDir 'run.log'
 $LockFile = Join-Path $SetupDir 'running.lock'
 $PidFile = Join-Path $SetupDir 'dev.pid'
 $DevPort = 3000
-$DevUrl = "http://localhost:$DevPort"
+$DevUrl = "http://127.0.0.1:$DevPort"
 $NodeVersion = '20.18.0'
 
 function Ensure-Dir([string]$Path) {
@@ -128,25 +128,93 @@ function Test-DevPortOpen {
     return $false
 }
 
+function Test-DevServerHealthy {
+    if (-not (Test-DevPortOpen)) { return $false }
+    try {
+        $r = Invoke-WebRequest -Uri $DevUrl -UseBasicParsing -TimeoutSec 10
+        return ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400)
+    } catch {
+        return $false
+    }
+}
+
+function Get-ListenerPidsOnPort([int]$Port) {
+    $pids = @()
+    foreach ($line in (netstat -ano)) {
+        if ($line -match ":$Port\s+.*LISTENING\s+(\d+)\s*$") {
+            $pids += [int]$Matches[1]
+        }
+    }
+    return ($pids | Select-Object -Unique)
+}
+
+function Stop-ListenerOnPort([int]$Port) {
+    foreach ($procId in (Get-ListenerPidsOnPort $Port)) {
+        if ($procId -le 0) { continue }
+        $alive = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if ($alive) {
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+            Log "stopped pid $procId on port $Port"
+        } else {
+            Log "port $Port held by dead pid $procId (ghost socket)"
+        }
+    }
+    Start-Sleep -Seconds 2
+}
+
 function Wait-ForDevServer {
     $deadline = (Get-Date).AddSeconds(120)
     while ((Get-Date) -lt $deadline) {
-        if (Test-DevPortOpen) { return $true }
+        if (Test-DevServerHealthy) { return $true }
         Start-Sleep -Seconds 2
     }
     return $false
 }
 
+function Escape-SingleQuoted([string]$Value) {
+    return $Value.Replace("'", "''")
+}
+
+function Start-DevServerHidden([string]$NodeExe, [string]$NextCli, [string]$DevLog) {
+    $runnerPath = Join-Path $SetupDir 'run-dev.ps1'
+    $qNode = Escape-SingleQuoted $NodeExe
+    $qNext = Escape-SingleQuoted $NextCli
+    $qRoot = Escape-SingleQuoted $ProjectRoot
+    $qLog = Escape-SingleQuoted $DevLog
+
+    $runner = @"
+`$ErrorActionPreference = 'Continue'
+Set-Location -LiteralPath '$qRoot'
+`$env:CI = '1'
+`$env:NEXT_TELEMETRY_DISABLED = '1'
+`$env:NODE_NO_WARNINGS = '1'
+& '$qNode' '$qNext' dev --hostname 127.0.0.1 -p $DevPort *>> '$qLog'
+"@
+
+    Set-Content -Path $runnerPath -Value $runner -Encoding UTF8
+
+    return Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+        '-ExecutionPolicy', 'Bypass', '-File', $runnerPath
+    ) -WindowStyle Hidden -PassThru
+}
+
 Ensure-Dir $SetupDir
 
-if (Test-DevPortOpen) {
+if (Test-DevServerHealthy) {
     Log "already running $DevUrl"
     exit 0
 }
 
-if (Test-Path $LockFile) {
-    Remove-Item $LockFile -Force -ErrorAction SilentlyContinue
+if (Test-DevPortOpen) {
+    Log "port $DevPort open but not healthy - clearing stale listener"
+    Stop-ListenerOnPort $DevPort
+    if ((Test-DevPortOpen) -and -not (Test-DevServerHealthy)) {
+        Log "port $DevPort still stuck (ghost socket) - reboot may be required"
+    }
 }
+
+if (Test-Path $LockFile) { Remove-Item $LockFile -Force -ErrorAction SilentlyContinue }
 
 try {
     Ensure-Project
@@ -167,17 +235,9 @@ try {
 
     Log 'dev server start'
     $devLog = Join-Path $SetupDir 'dev.log'
-    $devErrLog = Join-Path $SetupDir 'dev.err.log'
     if (Test-Path $devLog) { Remove-Item $devLog -Force }
-    if (Test-Path $devErrLog) { Remove-Item $devErrLog -Force }
 
-    $devProc = Start-Process -FilePath $nodeExe `
-        -ArgumentList $nextCli, 'dev' `
-        -WorkingDirectory $ProjectRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $devLog `
-        -RedirectStandardError $devErrLog `
-        -PassThru
+    $devProc = Start-DevServerHidden $nodeExe $nextCli $devLog
 
     Set-Content -Path $PidFile -Value $devProc.Id
     Set-Content -Path $LockFile -Value $devProc.Id
@@ -186,15 +246,15 @@ try {
         if (-not $devProc.HasExited) {
             Log "ready $DevUrl (server running in background)"
         } else {
-            Log 'dev server exited early — see dev.log'
+            Log 'dev server exited early - see dev.log'
             if (Test-Path $devLog) {
-                Get-Content $devLog -Tail 5 | ForEach-Object { Log "dev: $_" }
+                Get-Content $devLog -Tail 8 | ForEach-Object { Log "dev: $_" }
             }
         }
     } else {
-        Log 'dev server timeout — see dev.log'
+        Log 'dev server timeout - see dev.log'
         if (Test-Path $devLog) {
-            Get-Content $devLog -Tail 10 | ForEach-Object { Log "dev: $_" }
+            Get-Content $devLog -Tail 12 | ForEach-Object { Log "dev: $_" }
         }
     }
 } catch {
